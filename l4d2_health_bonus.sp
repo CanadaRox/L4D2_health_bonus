@@ -6,9 +6,9 @@
 
 public Plugin:myinfo = {
 	name = "Health Bonus",
-	author = "Grego",
+	author = "Grego, CanadaRox",
 	description = "Health Bonus",
-	version = "0.1",
+	version = "0.2",
 	url = ""
 };
 
@@ -27,25 +27,64 @@ new firstRoundScore;
 // Plugin cvars
 new Handle:enableHealthBonusCvar;
 new Handle:permanentHealthBonusPointsCvar;
+new permanentHealthBonusPoints;
 new Handle:temporaryHealthBonusPointsCvar;
+new temporaryHealthBonusPoints;
+
+new Handle:medkitPointValueCvar;
+new medkitPointValue;
+new Handle:defibPointValueCvar;
+new defibPointValue;
+new Handle:pillPointValueCvar;
+new pillPointValue;
+new Handle:adrenPointValueCvar;
+new adrenPointValue;
 
 // Default bonus cvars
 new Handle:survivalBonusCvar;
 new Handle:tieBreakerCvar;
 
+// Cvars to read values from
+new Handle:maxIncapCvar;
+new maxIncapCount;
+new Handle:postIncapHealthCvar;
+new postIncapHealth;
+
 public OnPluginStart() {
 	enableHealthBonusCvar = CreateConVar("hb_enable", "1", "Health Bonus - Enable/Disable", FCVAR_PLUGIN);
 	HookConVarChange(enableHealthBonusCvar, HandleHealthBonusEnableChangeEvent);
 
-	permanentHealthBonusPointsCvar = CreateConVar("hb_permanent_health_bonus_points", "0.5", "Number of bonus points to receive for a permanent health point. (default = 0.5)", FCVAR_PLUGIN);
+	permanentHealthBonusPointsCvar = CreateConVar("hb_permanent_health_bonus_points", "0.5", "Number of bonus points to receive for a permanent health point.", FCVAR_PLUGIN, true, 0.0);
+	permanentHealthBonusPoints = GetConVarInt(permanentHealthBonusPointsCvar);
 
-	temporaryHealthBonusPointsCvar = CreateConVar("hb_temporary_health_bonus_points", "0.25", "Number of bonus points to receive for a temporary health point. (default = 0.25)", FCVAR_PLUGIN);
+	temporaryHealthBonusPointsCvar = CreateConVar("hb_temporary_health_bonus_points", "0.25", "Number of bonus points to receive for a temporary health point.", FCVAR_PLUGIN, true, 0.0);
+	temporaryHealthBonusPoints = GetConVarInt(temporaryHealthBonusPointsCvar);
+
+	medkitPointValueCvar = CreateConVar("hb_medkit_point_value", "80", "Number of pre-scaling points to reward for a medkit", FCVAR_PLUGIN, true, 0.0);
+	medkitPointValue = GetConVarInt(medkitPointValueCvar);
+	defibPointValueCvar = CreateConVar("hb_defib_point_value", "50", "Number of pre-scaling points to reward for a defib", FCVAR_PLUGIN, true, 0.0);
+	defibPointValue = GetConVarInt(defibPointValueCvar);
+	pillPointValueCvar = CreateConVar("hb_pill_point_value", "50", "Number of pre-scaling points to reward for pain pills", FCVAR_PLUGIN, true, 0.0);
+	pillPointValue = GetConVarInt(pillPointValueCvar);
+	adrenPointValueCvar = CreateConVar("hb_adren_point_value", "25", "Number of pre-scaling points to reward for adrenaline", FCVAR_PLUGIN, true, 0.0);
+	adrenPointValue = GetConVarInt(adrenPointValueCvar);
+
+	HookConVarChange(permanentHealthBonusPointsCvar, CvarChanged);
+	HookConVarChange(temporaryHealthBonusPointsCvar, CvarChanged);
+	HookConVarChange(medkitPointValueCvar, CvarChanged);
+	HookConVarChange(defibPointValueCvar, CvarChanged);
+	HookConVarChange(pillPointValueCvar, CvarChanged);
+	HookConVarChange(adrenPointValueCvar, CvarChanged);
 
 	survivalBonusCvar = FindConVar("vs_survival_bonus");
 	tieBreakerCvar = FindConVar("vs_tiebreak_bonus");
-	
+	maxIncapCvar = FindConVar("survivor_max_incapacitated_count");
+	postIncapHealthCvar = FindConVar("survivor_revive_health");
+
 	defaultSurvivalBonus = GetConVarInt(survivalBonusCvar);
 	defaultTieBreaker = GetConVarInt(tieBreakerCvar);
+	maxIncapCount = GetConVarInt(maxIncapCvar);
+	postIncapHealth = GetConVarInt(postIncapHealthCvar);
 
 	RegConsoleCmd("sm_health", PrintHealth);
 }
@@ -63,6 +102,8 @@ PluginEnable() {
 	RegConsoleCmd("say_team", SayCommandIntercept);
 	defaultSurvivalBonus = GetConVarInt(survivalBonusCvar);
 	defaultTieBreaker = GetConVarInt(tieBreakerCvar);
+	maxIncapCount = GetConVarInt(maxIncapCvar);
+	postIncapHealth = GetConVarInt(postIncapHealthCvar);
 	SetConVarInt(tieBreakerCvar, 0);
 	pluginEnabled = true;
 }
@@ -117,6 +158,18 @@ public HandleHealthBonusEnableChangeEvent(Handle:convar, const String:oldValue[]
 	} else {
 		PluginEnable();
 		isHealthBonusEnabled = true;
+	}
+}
+
+public CvarChanged(Handle:convar, const String:oldValue[], const String:newValue[]) {
+	if (convar == medkitPointValueCvar) {
+		medkitPointValue = GetConVarInt(medkitPointValueCvar);
+	} else if (convar == defibPointValueCvar) {
+		defibPointValue = GetConVarInt(defibPointValueCvar);
+	} else if (convar == pillPointValueCvar) {
+		pillPointValue = GetConVarInt(pillPointValueCvar);
+	} else if (convar == adrenPointValueCvar) {
+		adrenPointValue = GetConVarInt(adrenPointValueCvar);
 	}
 }
 
@@ -181,39 +234,30 @@ Float:CalculateHealthBonus(&aliveSurvivors=0) {
 	new totalPermHealth = 0;
 	new totalTempHealth = 0;
 
-	for (new index = 1; index < MaxClients; index++) {
-		if (IsSurvivor(index)) {
-			if (IsPlayerAlive(index)) {
-				if (!IsPlayerIncapped(index)) {
-					totalPermHealth += GetSurvivorPermanentHealth(index);
-					
-					totalTempHealth += GetSurvivorTempHealth(index);
-					
-					totalTempHealth += (2 - GetSurvivorIncapCount(index)) * 30;
-					
-					if (SurvivorHasHealthPack(index)) {
-						totalPermHealth += 80;
-					}
+	for (new index = 1; index <= MaxClients; index++) {
+		if (IsSurvivor(index) && IsPlayerAlive(index) && !IsPlayerIncapped(index)) {
+			totalPermHealth += GetSurvivorPermanentHealth(index);
 
-					if (SurvivorHasDefibrillator(index)) {
-						totalPermHealth += 50;
-					}
+			totalTempHealth += GetSurvivorTempHealth(index);
 
-					if (SurvivorHasPills(index)) {
-						totalTempHealth += 50;
-					}
+			totalTempHealth += (maxIncapCount - GetSurvivorIncapCount(index)) * postIncapHealth;
 
-					if (SurvivorHasShot(index)) {
-						totalTempHealth += 30;
-					}
+			if (SurvivorHasHealthPack(index)) {
+				totalPermHealth += medkitPointValue;
+			} else if (SurvivorHasDefibrillator(index)) {
+				totalPermHealth += defibPointValue;
+			}
 
-					aliveSurvivors++;
-				}
+			if (SurvivorHasPills(index)) {
+				totalTempHealth += pillPointValue;
+			} else if (SurvivorHasShot(index)) {
+				totalTempHealth += adrenPointValue;
+
+				aliveSurvivors++;
 			}
 		}
 	}
-			
-	return (float(totalPermHealth) * GetConVarFloat(permanentHealthBonusPointsCvar) + float(totalTempHealth) * GetConVarFloat(temporaryHealthBonusPointsCvar));
+	return (float(totalPermHealth) * permanentHealthBonusPoints+ float(totalTempHealth) * temporaryHealthBonusPoints);
 }
 
 bool:IsPlayerIncapped(client) {
@@ -229,8 +273,8 @@ GetSurvivorPermanentHealth(client) {
 }
 
 GetSurvivorTempHealth(client) {
-	new temphp = RoundToCeil(GetEntPropFloat(client, Prop_Send, "m_healthBuffer") - ((GetGameTime() - GetEntPropFloat(client, Prop_Send, "m_healthBufferTime")) * GetConVarFloat(FindConVar("pain_pills_decay_rate")))) - 1;
-	return (temphp > 0 ? temphp : 0);
+	new temphp =  RoundToFloor(GetEntPropFloat(client, Prop_Send, "m_healthBuffer") - ((GetGameTime() - GetEntPropFloat(client, Prop_Send, "m_healthBufferTime")) * GetConVarFloat(pain_pills_decay_rate)));
+	return (temphp > 0 ? temphp : 0)
 }
 
 GetSurvivorIncapCount(client) {
